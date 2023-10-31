@@ -100,6 +100,7 @@ static void start_process(void* file_name_) {
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
     success = load(file_name, &if_.eip, &if_.esp);
+    if_.esp = (void*)(0xc0000000 - 0x10 - 0x4);
   }
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
