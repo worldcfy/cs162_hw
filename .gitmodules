@@ -1,0 +1,3 @@
+[submodule "cs162_hw"]
+	path = cs162_hw
+	url = git@github.com:worldcfy/cs162_hw.git

@@ -201,6 +201,27 @@ void identify_and_execute(int start, int end, char** args)
   fprintf(stdout, "Sorry, there is no such prog exist as %s.\n", prog);
 }
 
+int running_prg = 0;
+pid_t pgleader = 0;
+pid_t shell_pid = 0;
+pid_t pid_array[20] = {0};
+int status[20];
+/* Signal handler function */
+void sighandler_INT(int num)
+{
+  if(running_prg)
+  {
+    if (pgleader != 0)
+      killpg(pgleader, SIGINT);
+    //fprintf(stdout, "pgleader is %d \n", pgleader);
+    write(STDOUT_FILENO, "\n",1);
+  }
+  else
+  {
+    kill(shell_pid, SIGTERM);
+  }
+}
+
 int main(unused int argc, unused char* argv[]) {
   init_shell();
 
@@ -208,10 +229,17 @@ int main(unused int argc, unused char* argv[]) {
   int line_num = 0;
   static arg_cnt_t arg_cnt;
 
+  struct sigaction a;
+  a.sa_handler = sighandler_INT;
+  (void)sigaction(SIGINT, &a, NULL);
+  
+  shell_pid = getpid();
   /* Please only print shell prompts when standard input is not a tty */
   if (shell_is_interactive)
     fprintf(stdout, "%d: ", line_num);
 
+  running_prg = 0;
+  pgleader = 0;
   while (fgets(line, 4096, stdin)) {
     /* Split our line into words. */
     struct tokens* tokens = tokenize(line);
@@ -235,8 +263,7 @@ int main(unused int argc, unused char* argv[]) {
     } 
     else {
       /* REPLACE this to run commands as programs. */
-      pid_t pid;
-      int status;
+      pid_t pid, pgid;
       char** args = (char**)malloc(sizeof(char*) * (tokens_get_length(tokens)+1));
       int i;
       int pipefd[2];
@@ -263,6 +290,7 @@ int main(unused int argc, unused char* argv[]) {
       args[tokens_get_length(tokens)] = NULL;
 
       /* Step 2: Create processes for each pipe */
+      running_prg = 1;
       for(i = 1; i <= arg_cnt.pipeCnt; i++)
       {
         int ret;
@@ -270,6 +298,23 @@ int main(unused int argc, unused char* argv[]) {
         if (i != arg_cnt.pipeCnt)
           ret = pipe(pipefd);
         pid = fork();
+        
+        if ((i == 1) && (pid == 0))
+        {
+          /* This is the first process of all, process group leader*/
+          pgid = setpgrp();
+          pgleader = pgid;
+        }
+        else if(i == 1)
+        {
+          /* This is the parent of the group leader*/
+          pgid = pid; 
+          pgleader = pid;
+        }
+        else
+        {
+          /* Nothing because don't want to change the pgid */
+        }
 
         if ((ret == -1) && (i != arg_cnt.pipeCnt))
         {
@@ -282,6 +327,7 @@ int main(unused int argc, unused char* argv[]) {
         }
         else if (pid == 0) /* This is the child process*/
         {
+          setpgid(0, pgid); // Set pgid the same as pg leader
           if (i != arg_cnt.pipeCnt)
           {
             close(pipefd[0]); // Close unused read end
@@ -296,17 +342,21 @@ int main(unused int argc, unused char* argv[]) {
         }
         else /* Parent */
         {
-          if ( i!= arg_cnt.pipeCnt)
+          if ( i != arg_cnt.pipeCnt)
           {
             close(pipefd[1]); // Close the unused write end
             dup2(pipefd[0], STDIN_FILENO);
-            //waitpid(pid, &status, 0);
+            pid_array[i-1] = pid;
           }
           else
           {
             close(pipefd[0]);
             dup2(savedIn, STDIN_FILENO );
-            waitpid(pid, &status, 0);
+            pid_array[i-1] = pid;
+            for (int j = 0; j < i;j++)
+            {
+              waitpid(-1, &status[j], 0);
+            }
           }
         }
       }
