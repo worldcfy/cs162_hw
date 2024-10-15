@@ -32,18 +32,65 @@ char* server_proxy_hostname;
 int server_proxy_port;
 
 /*
+ * This function will write size amount of data from src_fd to dst_fd
+ * */
+#define BUF_SIZE_MAX 8192
+void relay_byte_stream(int src_fd, int dst_fd, int size)
+{
+  char* buf = (char*)malloc(sizeof(char) * BUF_SIZE_MAX);
+  int bytes_read, bytes_written;
+  
+  while((bytes_read = read(src_fd, buf, size)) > 0)
+  {
+    //printf("This is thread %ld and I just read %d bytes from fd %d.\n", pthread_self(), bytes_read, src_fd);
+    //fflush(stdout);
+    char* ptr = buf;
+    int bytes_remain = bytes_read;
+
+    while((bytes_written = write(dst_fd, ptr, bytes_remain)) > 0)
+    {
+      if (bytes_written == bytes_read)
+        break;
+
+      bytes_remain -= bytes_written;
+      ptr += bytes_written;
+    }
+    //printf("This is thread %ld and I just write %d bytes to fd %d.\n", pthread_self(), bytes_written, dst_fd);
+    //fflush(stdout);
+  }
+  free(buf);
+}
+
+/*
  * Serves the contents the file stored at `path` to the client socket `fd`.
  * It is the caller's reponsibility to ensure that the file stored at `path` exists.
  */
-void serve_file(int fd, char* path) {
+void serve_file(int fd, char* path, int size) {
 
   /* TODO: PART 2 */
   /* PART 2 BEGIN */
+  char* ptr = (char*)malloc(10000000); // 10Mb
+  snprintf(ptr, 1000000, "%d", size); 
 
   http_start_response(fd, 200);
   http_send_header(fd, "Content-Type", http_get_mime_type(path));
-  http_send_header(fd, "Content-Length", "0"); // TODO: change this line too
-  http_end_headers(fd);
+  http_send_header(fd, "Content-Length", ptr); // TODO: change this line too
+  /* Send a blank line (CRLF by itself)*/
+  http_end_headers(fd); // Otherwise curl won't recognize the body
+  
+  /* Start transmitting the file itself*/
+  int file_fd = open(path, O_RDONLY);
+  //int count = 0;
+  //char* buf = (char*)malloc(sizeof(char)*size);
+
+  //while (count != size)
+  //{
+  //  int i = 0;
+  //  i = read(file_fd, (void*)buf, size);
+  //  write(fd, (void*)buf, i);
+  //  count += i;
+  //}
+  relay_byte_stream(file_fd, fd, size);
 
   /* PART 2 END */
 }
@@ -57,6 +104,20 @@ void serve_directory(int fd, char* path) {
   /* PART 3 BEGIN */
 
   // TODO: Open the directory (Hint: opendir() may be useful here)
+  DIR* dir = opendir(path);
+  struct dirent *entry;
+#ifdef DEBUG
+    printf("The path is: %s\n", path);
+#endif
+  while ((entry = readdir(dir)) != NULL)
+  {
+    char* ptr = (char*)malloc(sizeof(char) * 1000);
+    http_format_href(ptr, path, entry->d_name);
+    write(fd, ptr, strlen(ptr));
+#ifdef DEBUG
+    printf("The buffer is filled with: %s\n", ptr);
+#endif
+  }
 
   /**
    * TODO: For each entry in the directory (Hint: look at the usage of readdir() ),
@@ -97,8 +158,7 @@ void handle_files_request(int fd) {
     http_send_header(fd, "Content-Type", "text/html");
     http_end_headers(fd);
     close(fd);
-    return;
-  }
+    return; }
 
   /* Remove beginning `./` */
   char* path = malloc(2 + strlen(request->path) + 1);
@@ -117,11 +177,95 @@ void handle_files_request(int fd) {
    */
 
   /* PART 2 & 3 BEGIN */
+  struct stat buffer;
+  (void)stat(path, &buffer);  // Get the stat struct for specific file
+
+  if (S_ISREG(buffer.st_mode)) // It is a regular file
+  {
+    serve_file(fd, path, buffer.st_size);
+  }
+  else if (S_ISDIR(buffer.st_mode)) // It is a directory
+  {
+    /* Assemble the index file path*/
+    char* index_file = (char*)malloc(2+strlen(request->path)+11+1); // Null terminate + /index.html
+    memcpy(index_file, path, strlen(request->path) + 2); // only copy the ./ without the ending null
+    memcpy(index_file + strlen(request->path) + 2, "/index.html", 11);
+
+    /* See if the index file exist in the dir*/
+    (void)stat(index_file, &buffer);
+#ifdef DEBUG
+    printf("the path is : %s\n", path);
+    printf("the index_path is : %s\n", index_file);
+#endif
+    if (S_ISREG(buffer.st_mode))
+    {
+      serve_file(fd, index_file, buffer.st_size);
+    }
+    else
+    {
+      serve_directory(fd, path);
+    }
+  }
+  else
+  {
+    /*Serve a 404 Not Found response*/
+    http_start_response(fd, 404);
+    http_end_headers(fd);
+  }
 
   /* PART 2 & 3 END */
 
   close(fd);
   return;
+}
+
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+//pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+typedef struct _thread_arg {
+  int server_fd;
+  int client_fd;
+} THREAD_ARG;
+
+#define REQUEST_MAX_SIZE 8192
+static void client_to_server(void* arg)
+{
+  THREAD_ARG* ptr = arg;
+  //printf("This is cli to srv thread %ld.\n", pthread_self());
+  //fflush(stdout);
+  relay_byte_stream(ptr->client_fd, ptr->server_fd, REQUEST_MAX_SIZE);
+  //char* read_buffer = malloc(REQUEST_MAX_SIZE + 1);
+  //int num = 0;
+  //int count = 0;
+  //do
+  //{
+  //  num = read(ptr->client_fd, read_buffer, REQUEST_MAX_SIZE);
+  //  count = 0;
+  //  while (count != num)
+  //  {
+  //    count += write(ptr->server_fd, read_buffer, num-count);
+  //  }
+  //}while(num > 0);
+}
+
+static void server_to_client(void* arg)
+{
+  THREAD_ARG* ptr = arg;
+  //printf("This is srv to cli thread %ld.\n", pthread_self());
+  //fflush(stdout);
+  relay_byte_stream(ptr->server_fd, ptr->client_fd, REQUEST_MAX_SIZE);
+
+  //char* read_buffer = malloc(REQUEST_MAX_SIZE + 1);
+  //int num = 0;
+  //int count = 0;
+  //do
+  //{
+  //  num = read(ptr->server_fd, read_buffer, REQUEST_MAX_SIZE); 
+  //  count = 0;
+  //  while (count != num)
+  //  {
+  //    count += write(ptr->client_fd, read_buffer, num-count);
+  //  }
+  //}while(num > 0);
 }
 
 /*
@@ -167,9 +311,19 @@ void handle_proxy_request(int fd) {
   }
 
   char* dns_address = target_dns_entry->h_addr_list[0];
+#ifdef DEBUG
+  //printf("dns_address is %d\n", target_address.sin_addr.s_addr);
+  int i = 0;
+  while(target_dns_entry->h_addr_list[i] != 0)
+  {
+    printf("dns_address is %d, i is %d\n", target_dns_entry->h_addr_list[i], i);
+    i++;
+  }
+#endif
 
   // Connect to the proxy target.
   memcpy(&target_address.sin_addr, dns_address, sizeof(target_address.sin_addr));
+  printf("dns_address is %s\n", inet_ntoa(target_address.sin_addr));
   int connection_status =
       connect(target_fd, (struct sockaddr*)&target_address, sizeof(target_address));
 
@@ -182,11 +336,28 @@ void handle_proxy_request(int fd) {
     http_end_headers(fd);
     close(target_fd);
     close(fd);
+    fprintf(stdout, "Connection failed!");
     return;
   }
 
   /* TODO: PART 4 */
   /* PART 4 BEGIN */
+  fprintf(stdout, "Part 4 started\n");
+  fprintf(stdout, "server_fd is %d\n", fd);
+  fprintf(stdout, "client_fd is %d\n", target_fd);
+  fflush(stdout);
+  pthread_t thread1, thread2;
+  THREAD_ARG arg;
+  arg.server_fd = fd;
+  arg.client_fd = target_fd;
+  pthread_create(&thread1, NULL, client_to_server, &arg);
+  pthread_create(&thread2, NULL, server_to_client, &arg);
+
+  pthread_join(thread1, NULL);
+  pthread_join(thread2, NULL);
+#ifdef DEBUG
+    printf("Part 4 ended");
+#endif
 
   /* PART 4 END */
 }
@@ -263,6 +434,10 @@ void serve_forever(int* socket_number, void (*request_handler)(int)) {
    */
 
   /* PART 1 BEGIN */
+  bind(*socket_number, (struct sockaddr*) &server_address, sizeof(server_address));
+  printf("Binded connection from %s on port %d\n", inet_ntoa(server_address.sin_addr),
+           server_address.sin_port);
+  listen(*socket_number, 1024);
 
   /* PART 1 END */
   printf("Listening on port %d...\n", server_port);

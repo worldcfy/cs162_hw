@@ -3,6 +3,9 @@ CFLAGS=-g -ggdb3 -Wall -Wextra -std=gnu99
 LDFLAGS=-pthread
 EXECUTABLES=httpserver forkserver threadserver poolserver
 SOURCE=httpserver.c libhttp.c wq.c
+ifeq ($(DEBUG),1)
+CFLAGS += -DDEBUG
+endif
 
 all: $(EXECUTABLES)
 
