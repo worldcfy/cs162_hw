@@ -13,7 +13,7 @@ typedef struct wq_item {
 } wq_item_t;
 
 typedef struct wq {
-  int size;
+  volatile int size;
   wq_item_t* head;
   pthread_mutex_t mutex;
   pthread_cond_t condvar;

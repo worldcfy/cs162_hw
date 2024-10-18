@@ -227,7 +227,7 @@ typedef struct _thread_arg {
 } THREAD_ARG;
 
 #define REQUEST_MAX_SIZE 8192
-static void client_to_server(void* arg)
+static void* client_to_server(void* arg)
 {
   THREAD_ARG* ptr = arg;
   //printf("This is cli to srv thread %ld.\n", pthread_self());
@@ -245,9 +245,10 @@ static void client_to_server(void* arg)
   //    count += write(ptr->server_fd, read_buffer, num-count);
   //  }
   //}while(num > 0);
+  return NULL;
 }
 
-static void server_to_client(void* arg)
+static void* server_to_client(void* arg)
 {
   THREAD_ARG* ptr = arg;
   //printf("This is srv to cli thread %ld.\n", pthread_self());
@@ -266,6 +267,7 @@ static void server_to_client(void* arg)
   //    count += write(ptr->client_fd, read_buffer, num-count);
   //  }
   //}while(num > 0);
+  return NULL;
 }
 
 /*
@@ -355,8 +357,10 @@ void handle_proxy_request(int fd) {
 
   pthread_join(thread1, NULL);
   pthread_join(thread2, NULL);
+  close(fd);
+  close(target_fd);
 #ifdef DEBUG
-    printf("Part 4 ended");
+  printf("Part 4 ended");
 #endif
 
   /* PART 4 END */
@@ -377,7 +381,9 @@ void* handle_clients(void* void_request_handler) {
 
   /* TODO: PART 7 */
   /* PART 7 BEGIN */
-
+  int fd = wq_pop(&work_queue);
+  request_handler(fd);
+  return NULL;
   /* PART 7 END */
 }
 
@@ -388,10 +394,31 @@ void init_thread_pool(int num_threads, void (*request_handler)(int)) {
 
   /* TODO: PART 7 */
   /* PART 7 BEGIN */
-
+  pthread_t* ptr_thread = (pthread_t*)malloc(sizeof(pthread_t)*num_threads) ;
+  pthread_t* ptr = ptr_thread;
+  for (int i = 0; i < num_threads; i++)
+  {
+    pthread_create(ptr, NULL, handle_clients, (void*)request_handler);
+    ptr++;
+  }
+  free(ptr_thread);
+  /* Init the work queue */
+  wq_init(&work_queue);
   /* PART 7 END */
 }
 #endif
+typedef struct _request
+{
+  void(*request_handler)(int);
+  int fd;
+} REQ;
+/* Wraps around request handler for pthread function needs */
+void* request_handler_wrapper(void* ptr)
+{
+  void(*handler)(int) = ((REQ*)ptr)->request_handler; 
+  handler(((REQ*)ptr)->fd);
+  return NULL;
+}
 
 /*
  * Opens a TCP stream socket on all interfaces with port number PORTNO. Saves
@@ -485,7 +512,22 @@ void serve_forever(int* socket_number, void (*request_handler)(int)) {
      */
 
     /* PART 5 BEGIN */
-
+    pid_t pid;
+    pid = fork();
+    if (pid < 0)
+    {
+      exit(1);
+    }
+    else if (pid == 0)
+    {
+      //close(*socket_number); not needed because the shutdown below
+      request_handler(client_socket_number);
+    }
+    else
+    {
+      /* Continue listen and accept new calls */
+      close(client_socket_number);
+    }
     /* PART 5 END */
 
 #elif THREADSERVER
@@ -500,6 +542,12 @@ void serve_forever(int* socket_number, void (*request_handler)(int)) {
      */
 
     /* PART 6 BEGIN */
+    pthread_t t1;
+    REQ req;
+    req.request_handler = request_handler;
+    req.fd = client_socket_number;
+    pthread_create(&t1, NULL, request_handler_wrapper, &req);
+    //close(client_socket_number);
 
     /* PART 6 END */
 #elif POOLSERVER
@@ -512,7 +560,7 @@ void serve_forever(int* socket_number, void (*request_handler)(int)) {
      */
 
     /* PART 7 BEGIN */
-
+    wq_push(&work_queue, client_socket_number);
     /* PART 7 END */
 #endif
   }
